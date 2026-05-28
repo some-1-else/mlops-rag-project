@@ -7,7 +7,7 @@ from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunct
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from src.config import CHROMA_COLLECTION, EMBEDDING_MODEL, OPENAI_MODEL, ROOT_DIR, TOP_K
+from src.config import CHROMA_COLLECTION, EMBEDDING_MODEL, OPENAI_MODEL, ROOT_DIR
 
 
 load_dotenv(ROOT_DIR / ".env")
@@ -18,9 +18,12 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 CHROMA_DIR = ROOT_DIR / "vector_store" / "chroma"
 
-SYSTEM_PROMPT = """You answer questions using only the provided context.
-If the answer is not in the context, say: "В загруженных документах недостаточно информации."
+SYSTEM_PROMPT = """Use the provided context to answer the question.
+If the context contains partial information, provide the best possible answer and mention uncertainty.
+If the context is clearly unrelated, say: "В загруженных документах недостаточно информации."
 Keep the answer concise and cite relevant sources inline using source_file and page."""
+
+DEFAULT_TOP_K = 3
 
 
 def index_exists(index_dir: Path) -> bool:
@@ -37,7 +40,7 @@ def get_collection():
     )
 
 
-def search_chunks(question: str, top_k: int = TOP_K) -> list[dict]:
+def search_chunks(question: str, top_k: int = DEFAULT_TOP_K) -> list[dict]:
     collection = get_collection()
     result = collection.query(query_texts=[question], n_results=top_k)
 
@@ -142,7 +145,7 @@ if not index_exists(CHROMA_DIR):
     st.stop()
 
 question = st.text_input("Question", placeholder="Ask a question about indexed documents...")
-top_k = st.slider("Sources", min_value=1, max_value=10, value=TOP_K)
+top_k = st.slider("Sources", min_value=1, max_value=10, value=DEFAULT_TOP_K)
 
 if st.button("Ask", type="primary", disabled=not question.strip()):
     with st.spinner("Searching the index..."):
@@ -171,3 +174,19 @@ if st.button("Ask", type="primary", disabled=not question.strip()):
         )
         with st.expander(title):
             st.write(preview_text(match["content"]))
+
+    with st.expander("Retrieved context / debug"):
+        for idx, match in enumerate(matches, start=1):
+            metadata = match["metadata"]
+            st.markdown(
+                "\n".join(
+                    [
+                        f"**Chunk {idx}**",
+                        f"- source_file: `{metadata['source_file']}`",
+                        f"- page: `{metadata['page']}`",
+                        f"- chunk_id: `{metadata['chunk_id']}`",
+                        f"- score: `{match['score']:.3f}`",
+                    ]
+                )
+            )
+            st.text(preview_text(match["content"], max_length=2000))
