@@ -18,13 +18,19 @@ mlops-rag-project/
 |       `-- .gitkeep
 |-- vector_store/
 |-- scripts/
+|   |-- parse_pdfs.py
 |   `-- build_index.py
 `-- src/
     |-- config.py
     |-- pdf_loader.py
     |-- chunking.py
     |-- vector_db.py
-    `-- rag.py
+    |-- rag.py
+    `-- tools/
+        |-- pdf_parser.py
+        |-- time_series.py
+        |-- analytics.py
+        `-- agent_tools.py
 ```
 
 ## Setup
@@ -104,4 +110,21 @@ streamlit run app.py
 
 ## Current Scope
 
-This MVP handles text-only PDF RAG with source citations. Tables, charts, time-series tools, and a richer UI are intentionally left for later iterations.
+This MVP handles text-only PDF RAG with source citations.
+
+## Optional Data & Analytics Tools
+
+The project also includes optional helper modules under `src/tools/`:
+
+- `pdf_parser.py`: richer PDF parsing with text blocks, images, and optional table extraction.
+- `time_series.py`: connectors for CBR currency/key-rate series, Rosstat files, and custom CSV time series.
+- `analytics.py`: correlations, lag analysis, OLS regression, dynamics summaries, and Plotly charts.
+- `agent_tools.py`: wrappers that expose the helper modules as optional LangChain `StructuredTool` objects.
+
+These tools are not required for the core RAG UI path:
+
+```text
+PDF -> documents.jsonl -> Chroma -> Streamlit RAG
+```
+
+See [docs/analytics_tools.md](docs/analytics_tools.md) for examples and tool details.

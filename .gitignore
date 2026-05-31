@@ -1,8 +1,10 @@
 .env
 .venv/
 __pycache__/
+.DS_Store
 data/raw/*
 data/processed/*
 vector_store/*
+add_to_project/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
