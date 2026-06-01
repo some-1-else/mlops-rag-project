@@ -87,30 +87,40 @@ OLLAMA_BASE_URL=http://localhost:11434/v1
 
 ## Usage
 
-1. Put PDF files into `data/raw`.
-2. Parse PDFs into `data/processed/documents.jsonl`:
+1. Download the configured source files:
+
+```bash
+python scripts/download_sources.py
+```
+
+PDF reports are saved to `data/raw/`. Direct CSV/XML time-series files are saved to `data/raw/time_series/` for optional analytics tools.
+
+2. Put any extra PDF files into `data/raw`.
+3. Parse PDFs into `data/processed/documents.jsonl`:
 
 ```bash
 python scripts/parse_pdfs.py
 ```
 
-3. Build the local vector index:
+4. Build the local vector index:
 
 ```bash
 python scripts/build_index.py
 ```
 
-4. Start the Streamlit app:
+5. Start the Streamlit app:
 
 ```bash
 streamlit run app.py
 ```
 
-5. Ask a question and review the answer with cited source chunks.
+6. Ask a question and review the answer with cited source chunks.
 
 ## Current Scope
 
 This MVP handles text-only PDF RAG with source citations.
+
+The source registry lives in [docs/sources_registry.md](docs/sources_registry.md).
 
 ## Optional Data & Analytics Tools
 
