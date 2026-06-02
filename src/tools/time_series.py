@@ -18,6 +18,7 @@ time_series.py — коннекторы к открытым источникам
 
 from __future__ import annotations
 
+import os
 import logging
 from datetime import date, datetime
 from io import StringIO, BytesIO
@@ -30,8 +31,8 @@ from lxml import etree
 
 log = logging.getLogger(__name__)
 
-# Таймаут HTTP-запросов (секунды)
 _TIMEOUT = 30
+_CBR_VERIFY_SSL = os.getenv("CBR_VERIFY_SSL", "true").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ def get_cbr_currency(
         "VAL_NM_RQ": series_id,
     }
     log.info("ЦБ РФ: запрос %s [%s — %s]", series_id, start_str, end_str)
-    resp = requests.get(_CBR_DAILY_URL, params=params, timeout=_TIMEOUT)
+    resp = requests.get(_CBR_DAILY_URL, params=params, timeout=_TIMEOUT, verify=_CBR_VERIFY_SSL)
     resp.raise_for_status()
 
     root = etree.fromstring(resp.content)
@@ -120,7 +121,7 @@ def get_cbr_key_rate(
         "UniDbQuery.To": _fmt_cbr_date(end, sep="."),
     }
     log.info("ЦБ РФ: ключевая ставка [%s — %s]", start, end)
-    resp = requests.get(_CBR_KEY_RATE_URL, params=params, timeout=_TIMEOUT)
+    resp = requests.get(_CBR_KEY_RATE_URL, params=params, timeout=_TIMEOUT, verify=_CBR_VERIFY_SSL)
     resp.raise_for_status()
 
     tables = pd.read_html(StringIO(resp.text), decimal=",", thousands=" ")

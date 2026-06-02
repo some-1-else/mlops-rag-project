@@ -147,7 +147,7 @@ def download_sources(force: bool = False) -> None:
     failures = []
 
     print(f"PDF sources: {len(PDF_SOURCES)}")
-    for source in PDF_SOURCES:
+    for source in PDF_SOURCES[:5]:
         output_path = RAW_DIR / source["filename"]
         was_downloaded, failure = try_download_file(source["url"], output_path, force)
         downloaded += int(was_downloaded)
