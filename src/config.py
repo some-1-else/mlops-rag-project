@@ -13,8 +13,11 @@ load_dotenv(ROOT_DIR / ".env")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# EMBEDDING_MODEL = os.getenv(
+#     "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+# )
 EMBEDDING_MODEL = os.getenv(
-    "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+    "EMBEDDING_MODEL", "sentence-transformers/LaBSE"
 )
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "pdf_chunks")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))

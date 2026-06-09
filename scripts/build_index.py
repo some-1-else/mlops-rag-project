@@ -2,7 +2,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-
+from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 

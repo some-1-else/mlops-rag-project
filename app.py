@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.config import CHROMA_COLLECTION, EMBEDDING_MODEL, OPENAI_MODEL, ROOT_DIR
-
+from analytics_tab import render_analytics_tab
 
 load_dotenv(ROOT_DIR / ".env")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
@@ -57,7 +57,6 @@ def search_chunks(question: str, top_k: int = DEFAULT_TOP_K) -> list[dict]:
                 "score": 1 - distance,
             }
         )
-
     return matches
 
 
@@ -107,7 +106,6 @@ def generate_answer(messages: list[dict]) -> str:
         messages=messages,
         temperature=0.2,
     )
-
     return response.choices[0].message.content
 
 
@@ -127,66 +125,76 @@ def preview_text(text: str, max_length: int = 500) -> str:
     return f"{text[:max_length].rstrip()}..."
 
 
+# ---------------------------------------------------------------------------
+# App layout
+# ---------------------------------------------------------------------------
+
 st.set_page_config(page_title="MLOps RAG MVP", page_icon="search", layout="wide")
 
-st.title("MLOps RAG MVP")
-st.caption("Question answering over the prepared Chroma index")
+tab_rag, tab_charts = st.tabs(["🔍 RAG — поиск по документам", "📊 Text-to-Chart агент"])
 
-try:
-    llm_config = get_llm_config()
-except RuntimeError as exc:
-    st.error(str(exc))
-    st.stop()
+with tab_charts:
+    render_analytics_tab(generate_answer_fn=generate_answer)
 
-st.caption(f"LLM provider: {llm_config['provider']} / model: {llm_config['model']}")
+with tab_rag:
+    st.title("MLOps RAG MVP")
+    st.caption("Question answering over the prepared Chroma index")
 
-if not index_exists(CHROMA_DIR):
-    st.error("Index not found. Run python scripts/build_index.py first.")
-    st.stop()
-
-question = st.text_input("Question", placeholder="Ask a question about indexed documents...")
-top_k = st.slider("Sources", min_value=1, max_value=10, value=DEFAULT_TOP_K)
-
-if st.button("Ask", type="primary", disabled=not question.strip()):
-    with st.spinner("Searching the index..."):
-        matches = search_chunks(question.strip(), top_k=top_k)
-
-    if not matches:
-        st.warning("No relevant chunks found in the index.")
+    try:
+        llm_config = get_llm_config()
+    except RuntimeError as exc:
+        st.error(str(exc))
         st.stop()
 
-    with st.spinner("Generating answer..."):
-        try:
-            answer = answer_question(question.strip(), matches)
-        except Exception as exc:
-            st.error(f"LLM request failed: {exc}")
+    st.caption(f"LLM provider: {llm_config['provider']} / model: {llm_config['model']}")
+
+    if not index_exists(CHROMA_DIR):
+        st.error("Index not found. Run python scripts/build_index.py first.")
+        st.stop()
+
+    question = st.text_input("Question", placeholder="Ask a question about indexed documents...")
+    top_k = st.slider("Sources", min_value=1, max_value=100, value=DEFAULT_TOP_K)
+
+    if st.button("Ask", type="primary", disabled=not question.strip()):
+        with st.spinner("Searching the index..."):
+            matches = search_chunks(question.strip(), top_k=top_k)
+
+        if not matches:
+            st.warning("No relevant chunks found in the index.")
             st.stop()
 
-    st.subheader("Answer")
-    st.write(answer)
+        with st.spinner("Generating answer..."):
+            try:
+                answer = answer_question(question.strip(), matches)
+            except Exception as exc:
+                st.error(f"LLM request failed: {exc}")
+                st.stop()
 
-    st.subheader("Sources")
-    for idx, match in enumerate(matches, start=1):
-        metadata = match["metadata"]
-        title = (
-            f"{idx}. {metadata['source_file']} · page {metadata['page']} "
-            f"· chunk {metadata['chunk_id']} · score {match['score']:.3f}"
-        )
-        with st.expander(title):
-            st.write(preview_text(match["content"]))
+        st.subheader("Answer")
+        st.write(answer)
 
-    with st.expander("Retrieved context / debug"):
+        st.subheader("Sources")
         for idx, match in enumerate(matches, start=1):
             metadata = match["metadata"]
-            st.markdown(
-                "\n".join(
-                    [
-                        f"**Chunk {idx}**",
-                        f"- source_file: `{metadata['source_file']}`",
-                        f"- page: `{metadata['page']}`",
-                        f"- chunk_id: `{metadata['chunk_id']}`",
-                        f"- score: `{match['score']:.3f}`",
-                    ]
-                )
+            title = (
+                f"{idx}. {metadata['source_file']} · page {metadata['page']} "
+                f"· chunk {metadata['chunk_id']} · score {match['score']:.3f}"
             )
-            st.text(preview_text(match["content"], max_length=2000))
+            with st.expander(title):
+                st.write(preview_text(match["content"]))
+
+        with st.expander("Retrieved context / debug"):
+            for idx, match in enumerate(matches, start=1):
+                metadata = match["metadata"]
+                st.markdown(
+                    "\n".join(
+                        [
+                            f"**Chunk {idx}**",
+                            f"- source_file: `{metadata['source_file']}`",
+                            f"- page: `{metadata['page']}`",
+                            f"- chunk_id: `{metadata['chunk_id']}`",
+                            f"- score: `{match['score']:.3f}`",
+                        ]
+                    )
+                )
+                st.text(preview_text(match["content"], max_length=2000))

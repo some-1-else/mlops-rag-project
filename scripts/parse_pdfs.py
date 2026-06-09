@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-
+import fitz
 from pypdf import PdfReader
 
 
@@ -9,14 +9,15 @@ RAW_DIR = ROOT_DIR / "data" / "raw"
 PROCESSED_DIR = ROOT_DIR / "data" / "processed"
 OUTPUT_PATH = PROCESSED_DIR / "documents.jsonl"
 
-
 def parse_pdf(pdf_path: Path) -> list[dict]:
-    reader = PdfReader(str(pdf_path))
+    doc = fitz.open(str(pdf_path))
     doc_id = pdf_path.stem
     rows = []
 
-    for page_number, page in enumerate(reader.pages, start=1):
-        content = (page.extract_text() or "").strip()
+    for page_number in range(1, len(doc) + 1):
+        page = doc[page_number - 1]
+        content = page.get_text().strip()  
+        
         if not content:
             continue
 
@@ -31,7 +32,6 @@ def parse_pdf(pdf_path: Path) -> list[dict]:
         )
 
     return rows
-
 
 def main() -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
