@@ -18,12 +18,30 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 CHROMA_DIR = ROOT_DIR / "vector_store" / "chroma"
 
-SYSTEM_PROMPT = """Use the provided context to answer the question.
-If the context contains partial information, provide the best possible answer and mention uncertainty.
-If the context is clearly unrelated, say: "В загруженных документах недостаточно информации."
-Keep the answer concise and cite relevant sources inline using source_file and page."""
+SYSTEM_PROMPT = """You answer questions using ONLY the provided context below. Follow these three rules EXACTLY — pick exactly ONE of them, never mix them:
 
-DEFAULT_TOP_K = 3
+RULE 1 — Direct answer found:
+If the context directly answers the question, answer it concisely and cite the source inline like [1], [2] using the bracket numbers shown in the context.
+
+RULE 2 — No direct answer, but related information exists:
+If the context does NOT directly answer the question, but contains related or partial information
+(for example: a forecast instead of an actual historical figure, or data for a different period/region),
+start your answer with exactly this sentence:
+"Точного ответа на вопрос в документах нет, но есть смежная информация:"
+Then give that related information concisely, citing the source like [1], [2].
+Do NOT say "no information" and then immediately contradict yourself by giving an answer anyway —
+pick RULE 2 wording from the start if the match is only partial.
+
+RULE 3 — Nothing relevant:
+If the context is completely unrelated to the question, say only:
+"В загруженных документах недостаточно информации."
+Do not add anything else in this case.
+
+Keep answers concise. Always cite source_file and page for any fact you state."""
+
+DEFAULT_TOP_K = 5
+POOL_MULTIPLIER = 4    # сколько кандидатов рассматриваем перед диверсификацией (top_k * это число)
+MAX_PER_SOURCE = 2     # максимум чанков от одного source_file в финальной выдаче
 
 
 def index_exists(index_dir: Path) -> bool:
@@ -40,9 +58,10 @@ def get_collection():
     )
 
 
-def search_chunks(question: str, top_k: int = DEFAULT_TOP_K) -> list[dict]:
+def search_chunks_raw(question: str, n_results: int) -> list[dict]:
+    """Сырой запрос к Chroma без диверсификации — отсортирован по убыванию score."""
     collection = get_collection()
-    result = collection.query(query_texts=[question], n_results=top_k)
+    result = collection.query(query_texts=[question], n_results=n_results)
 
     documents = result.get("documents", [[]])[0]
     metadatas = result.get("metadatas", [[]])[0]
@@ -58,6 +77,67 @@ def search_chunks(question: str, top_k: int = DEFAULT_TOP_K) -> list[dict]:
             }
         )
     return matches
+
+
+def diversify_by_source(
+    matches: list[dict],
+    top_k: int,
+    max_per_source: int = MAX_PER_SOURCE,
+) -> list[dict]:
+    """
+    Ограничивает количество чанков от одного source_file в финальной выдаче.
+
+    Проблема, которую это решает: большой документ (например, обзор на 90+ страниц)
+    может занять весь top_k одними своими чанками, просто потому что он содержит
+    много текста на близкую тему. Из-за этого другие релевантные источники
+    (например, отчёты МВФ) не попадают в контекст LLM, хотя физически есть в индексе
+    и были бы в top-10/top-20.
+
+    Args:
+        matches: результаты search_chunks_raw(), отсортированные по убыванию score.
+        top_k: сколько чанков вернуть в итоге.
+        max_per_source: максимум чанков от одного source_file.
+
+    Returns:
+        Диверсифицированный список длины <= top_k.
+    """
+    from collections import defaultdict
+
+    selected = []
+    source_counts = defaultdict(int)
+    leftover = []
+
+    for item in matches:
+        source = item["metadata"].get("source_file", "?")
+        if source_counts[source] < max_per_source:
+            selected.append(item)
+            source_counts[source] += 1
+        else:
+            leftover.append(item)
+        if len(selected) >= top_k:
+            break
+
+    # Если диверсификация дала меньше top_k (мало разных источников в пуле) —
+    # догоняем оставшиеся места следующими по релевантности, игнорируя лимит.
+    if len(selected) < top_k:
+        for item in leftover:
+            selected.append(item)
+            if len(selected) >= top_k:
+                break
+
+    return selected[:top_k]
+
+
+def search_chunks(question: str, top_k: int = DEFAULT_TOP_K) -> list[dict]:
+    """
+    Поиск с диверсификацией по источникам.
+
+    Запрашивает более широкий пул кандидатов (top_k * POOL_MULTIPLIER),
+    затем выбирает top_k с ограничением на количество чанков от одного файла.
+    """
+    pool_size = max(top_k * POOL_MULTIPLIER, top_k)
+    raw_matches = search_chunks_raw(question, n_results=pool_size)
+    return diversify_by_source(raw_matches, top_k=top_k, max_per_source=MAX_PER_SOURCE)
 
 
 def build_context(matches: list[dict]) -> str:
@@ -154,6 +234,10 @@ with tab_rag:
 
     question = st.text_input("Question", placeholder="Ask a question about indexed documents...")
     top_k = st.slider("Sources", min_value=1, max_value=100, value=DEFAULT_TOP_K)
+    st.caption(
+        f"Поиск диверсифицирован по источникам: не более {MAX_PER_SOURCE} чанков "
+        f"от одного файла (пул кандидатов: top_k × {POOL_MULTIPLIER})."
+    )
 
     if st.button("Ask", type="primary", disabled=not question.strip()):
         with st.spinner("Searching the index..."):
