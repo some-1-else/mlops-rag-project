@@ -45,9 +45,11 @@ tools = get_all_tools()
 | `compute_lag_analysis` | Лаговая кросс-корреляция |
 | `run_regression` | OLS регрессия (statsmodels) |
 | `compute_dynamics` | Динамика ряда, YoY |
+| `predict_series` | MVP-прогноз временного ряда через линейный тренд + holdout-валидация |
 | `plot_series` | График рядов → HTML-файл |
 | `plot_correlation` | Scatter-plot корреляции → HTML |
 | `plot_lag_analysis` | График лагов → HTML |
+| `plot_forecast` | График факта, тренда, прогноза и доверительного интервала → HTML |
 
 ---
 
@@ -88,7 +90,19 @@ print(path)  # output/charts/series.html
 from src.tools.agent_tools import tool_plot_lag_analysis
 path = tool_plot_lag_analysis(usd_json, rate_json, max_lag=12)
 
-# 5. Парсинг PDF
+# 5. Прогноз временного ряда
+from src.tools.agent_tools import tool_predict_series, tool_plot_forecast
+
+forecast = tool_predict_series(usd_json, steps=6)
+path = tool_plot_forecast(usd_json, steps=6)
+
+# 6. Парсинг PDF
 from src.tools.agent_tools import tool_parse_pdf
 summary = tool_parse_pdf("data/report.pdf")
 ```
+
+## Что показывать на защите
+
+- `load_csv_series`, `get_cbr_currency`, `get_cbr_key_rate` и `get_rosstat_series` закрывают гибкость источников: ряд можно брать из локального файла, URL, XML/HTML API ЦБ РФ или файлов Росстата.
+- `predict_series` закрывает интеграцию прогнозной логики в контур агента: агент может не только строить исторические графики, но и вызывать прогнозный модуль.
+- `predict_series` возвращает holdout MAE/MAPE, что можно описывать как MVP-валидацию модельного риска прогноза.

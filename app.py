@@ -1,4 +1,6 @@
+import json
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,7 +12,7 @@ from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunct
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from src.config import CHROMA_COLLECTION, EMBEDDING_MODEL, OPENAI_MODEL, ROOT_DIR
+from src.config import CHROMA_COLLECTION, EMBEDDING_MODEL, OPENAI_MODEL, ROOT_DIR, TOP_K
 
 load_dotenv(ROOT_DIR / ".env")
 
@@ -20,9 +22,11 @@ try:
         compute_correlation,
         compute_lag_analysis,
         compute_dynamics,
+        predict_series,
         plot_series,
         plot_correlation,
         plot_lag_analysis,
+        plot_forecast,
     )
     ANALYTICS_AVAILABLE = True
 except ImportError as e:
@@ -47,7 +51,16 @@ If the context contains partial information, provide the best possible answer an
 If the context is clearly unrelated, say: "В загруженных документах недостаточно информации."
 Keep the answer concise and cite relevant sources inline using source_file and page."""
 
-DEFAULT_TOP_K = 3
+RAG_JUDGE_PROMPT = """You are a strict RAG quality judge.
+Evaluate the answer using only the question, retrieved context, answer, and retrieval scores.
+Return only valid JSON with these keys:
+context_relevance, groundedness, answer_relevance, risk_note.
+Each score must be a number from 1 to 5.
+context_relevance means whether retrieved context supports the question.
+groundedness means whether the answer is supported by retrieved context.
+answer_relevance means whether the answer directly answers the question."""
+
+DEFAULT_TOP_K = TOP_K
 
 SERIES_OPTIONS = {
     "CBR key rate": "cbr_key_rate",
@@ -59,6 +72,7 @@ ANALYSIS_OPTIONS = [
     "dynamics",
     "correlation",
     "lag analysis",
+    "forecast",
     "plot series",
     "plot correlation",
     "plot lag analysis",
@@ -123,6 +137,27 @@ def build_context(matches: list[dict]) -> str:
             )
         )
     return "\n\n".join(blocks)
+
+
+@st.cache_data
+def load_source_links() -> dict[str, str]:
+    registry_path = ROOT_DIR / "docs" / "sources_registry.md"
+    if not registry_path.exists():
+        return {}
+
+    links = {}
+    row_re = re.compile(r"\|\s*\d+\s*\|\s*`([^`]+)`\s*\|.*?\|\s*(https?://\S+)\s*\|")
+    for line in registry_path.read_text(encoding="utf-8").splitlines():
+        match = row_re.match(line)
+        if not match:
+            continue
+        local_file, url = match.groups()
+        links[Path(local_file).name] = url.strip()
+    return links
+
+
+def source_link_for(source_file: str) -> str | None:
+    return load_source_links().get(Path(source_file).name)
 
 
 def get_llm_config() -> dict:
@@ -239,6 +274,88 @@ def answer_question(question: str, matches: list[dict]) -> tuple[str, str, list[
     return answer, context, messages
 
 
+def evaluate_rag_answer(
+    question: str,
+    answer: str,
+    context: str,
+    matches: list[dict],
+) -> dict:
+    judge_input = "\n\n".join(
+        [
+            f"Question:\n{question}",
+            f"Answer:\n{answer}",
+            f"Retrieval scores:\n{[round(match['score'], 4) for match in matches]}",
+            f"Retrieved context:\n{context[:10000]}",
+        ]
+    )
+    messages = [
+        {"role": "system", "content": RAG_JUDGE_PROMPT},
+        {"role": "user", "content": judge_input},
+    ]
+
+    try:
+        raw = generate_answer(messages)
+        metrics = _parse_judge_json(raw)
+        metrics["method"] = "LLM-as-a-judge"
+        return metrics
+    except Exception as exc:
+        metrics = _heuristic_rag_metrics(question, answer, context, matches)
+        metrics["method"] = "heuristic fallback"
+        metrics["risk_note"] = f"LLM judge unavailable: {exc}"
+        return metrics
+
+
+def _parse_judge_json(raw: str) -> dict:
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if not match:
+        raise ValueError("Judge did not return JSON")
+
+    parsed = json.loads(match.group(0))
+    return {
+        "context_relevance": _clip_score(parsed.get("context_relevance")),
+        "groundedness": _clip_score(parsed.get("groundedness")),
+        "answer_relevance": _clip_score(parsed.get("answer_relevance")),
+        "risk_note": str(parsed.get("risk_note", "")).strip() or "No material issue detected.",
+    }
+
+
+def _clip_score(value) -> float:
+    score = float(value)
+    return round(max(1.0, min(5.0, score)), 2)
+
+
+def _heuristic_rag_metrics(
+    question: str,
+    answer: str,
+    context: str,
+    matches: list[dict],
+) -> dict:
+    avg_score = sum(match["score"] for match in matches) / max(len(matches), 1)
+    context_score = 1 + 4 * max(0, min(1, avg_score))
+
+    context_words = _content_words(context)
+    answer_words = _content_words(answer)
+    question_words = _content_words(question)
+    grounded_overlap = len(answer_words & context_words) / max(len(answer_words), 1)
+    relevance_overlap = len(question_words & answer_words) / max(len(question_words), 1)
+
+    return {
+        "context_relevance": round(context_score, 2),
+        "groundedness": round(1 + 4 * min(1, grounded_overlap * 2.5), 2),
+        "answer_relevance": round(1 + 4 * min(1, relevance_overlap * 2.5), 2),
+    }
+
+
+def _content_words(text: str) -> set[str]:
+    words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]{4,}", text.lower())
+    stop_words = {
+        "this", "that", "with", "from", "have", "were", "been", "also",
+        "для", "что", "как", "или", "это", "его", "она", "они", "при",
+        "the", "and", "are", "was", "страница", "source", "page",
+    }
+    return {word for word in words if word not in stop_words}
+
+
 def preview_text(text: str, max_length: int = 500) -> str:
     text = " ".join(text.split())
     if len(text) <= max_length:
@@ -276,6 +393,7 @@ if mode == "Analytics demo":
         start_date = st.date_input("Start", value=pd.Timestamp("2022-01-01"))
     with col_date2:
         end_date = st.date_input("End", value=pd.Timestamp("2024-12-31"))
+    forecast_steps = st.number_input("Forecast horizon", min_value=1, max_value=24, value=6, step=1)
 
     if st.button("Run Analysis", type="primary"):
         with st.spinner("Loading data..."):
@@ -317,6 +435,34 @@ if mode == "Analytics demo":
                         st.dataframe(df1.head(10))
                     except Exception as e:
                         st.error(f"Lag analysis failed: {e}")
+
+                elif analysis_type == "forecast":
+                    try:
+                        result = predict_series(df1, steps=int(forecast_steps), resample_freq="ME")
+                        st.subheader("Forecast Result")
+                        st.write(result.summary())
+
+                        col_m1, col_m2, col_m3 = st.columns(3)
+                        col_m1.metric("Last actual", f"{result.last_actual_value:.3f}")
+                        col_m2.metric("Trend / period", f"{result.slope_per_period:.3f}")
+                        if result.holdout_mape is None:
+                            col_m3.metric("Holdout MAPE", "n/a")
+                        else:
+                            col_m3.metric("Holdout MAPE", f"{result.holdout_mape:.1f}%")
+
+                        plot_path = plot_forecast(
+                            df1,
+                            result,
+                            title=f"Forecast: {series1_name}",
+                        )
+                        st.success(f"Chart saved: {plot_path}")
+                        with open(plot_path, "r", encoding="utf-8") as f:
+                            st.components.v1.html(f.read(), height=600, scrolling=True)
+
+                        st.subheader("Forecast points")
+                        st.dataframe(result.forecast[["date", "value", "lower", "upper"]])
+                    except Exception as e:
+                        st.error(f"Forecast failed: {e}")
 
                 elif analysis_type == "plot series":
                     st.subheader("Plot: Series")
@@ -401,6 +547,17 @@ if st.button("Ask", type="primary", disabled=not question.strip()):
     st.subheader("Answer")
     st.write(answer)
 
+    with st.spinner("Evaluating RAG quality..."):
+        metrics = evaluate_rag_answer(question.strip(), answer, context, matches)
+
+    with st.expander("RAG Quality Metrics"):
+        st.caption(f"Evaluation method: {metrics['method']}")
+        col_q1, col_q2, col_q3 = st.columns(3)
+        col_q1.metric("Context relevance", f"{metrics['context_relevance']:.1f}/5")
+        col_q2.metric("Groundedness", f"{metrics['groundedness']:.1f}/5")
+        col_q3.metric("Answer relevance", f"{metrics['answer_relevance']:.1f}/5")
+        st.write(metrics["risk_note"])
+
     with st.expander("Retrieved Context"):
         st.text(context)
 
@@ -412,11 +569,14 @@ if st.button("Ask", type="primary", disabled=not question.strip()):
     st.subheader("Sources")
     for idx, match in enumerate(matches, start=1):
         metadata = match["metadata"]
+        source_url = source_link_for(metadata["source_file"])
         title = (
             f"{idx}. {metadata['source_file']} · page {metadata['page']} "
             f"· chunk {metadata['chunk_id']} · score {match['score']:.3f}"
         )
         with st.expander(title):
+            if source_url:
+                st.markdown(f"[Open original source]({source_url})")
             st.write(preview_text(match["content"]))
 
     with st.expander("Retrieved context / debug"):

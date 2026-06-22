@@ -115,10 +115,15 @@ streamlit run app.py
 ```
 
 6. Ask a question and review the answer with cited source chunks.
+7. Open `RAG Quality Metrics` under the answer to inspect MVP quality checks:
+   context relevance, groundedness, and answer relevance.
 
 ## Current Scope
 
-This MVP handles text-only PDF RAG with source citations.
+This MVP handles text-only PDF RAG with source citations and lightweight
+LLM-as-a-judge quality metrics. If the judge call is unavailable, the UI falls
+back to deterministic heuristic metrics so the evaluation block remains visible
+during a demo.
 
 The source registry lives in [docs/sources_registry.md](docs/sources_registry.md).
 
@@ -128,7 +133,8 @@ The project also includes optional helper modules under `src/tools/`:
 
 - `pdf_parser.py`: richer PDF parsing with text blocks, images, and optional table extraction.
 - `time_series.py`: connectors for CBR currency/key-rate series, Rosstat files, and custom CSV time series.
-- `analytics.py`: correlations, lag analysis, OLS regression, dynamics summaries, and Plotly charts.
+- `analytics.py`: correlations, lag analysis, OLS regression, dynamics summaries,
+  MVP forecasting, and Plotly charts.
 - `agent_tools.py`: wrappers that expose the helper modules as optional LangChain `StructuredTool` objects.
 
 These tools are not required for the core RAG UI path:

@@ -32,7 +32,7 @@ from src.tools.time_series import (
 from src.tools.analytics import (
     compute_correlation, compute_lag_analysis, run_regression,
     compute_dynamics, plot_series, plot_correlation,
-    plot_lag_analysis, plot_regression,
+    plot_lag_analysis, plot_regression, predict_series, plot_forecast,
 )
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,12 @@ class DynamicsInput(BaseModel):
     series_json: str = Field(..., description="JSON-строка временного ряда")
 
 
+class ForecastInput(BaseModel):
+    series_json: str = Field(..., description="JSON-строка временного ряда")
+    steps: int = Field(6, description="Горизонт прогноза в периодах")
+    resample_freq: str = Field("ME", description="Частота ресемплинга: D, W, ME, QE, YE")
+
+
 class PlotSeriesInput(BaseModel):
     series_json_list: list[str] = Field(..., description="Список JSON-строк рядов")
     title: str = Field("Временной ряд", description="Заголовок графика")
@@ -117,6 +123,13 @@ class PlotLagInput(BaseModel):
     series1_json: str = Field(..., description="JSON ряда 1")
     series2_json: str = Field(..., description="JSON ряда 2")
     max_lag: int = Field(12, description="Максимальный лаг")
+    output_path: Optional[str] = Field(None, description="Путь для сохранения")
+
+
+class PlotForecastInput(BaseModel):
+    series_json: str = Field(..., description="JSON временного ряда")
+    steps: int = Field(6, description="Горизонт прогноза в периодах")
+    resample_freq: str = Field("ME", description="Частота ресемплинга: D, W, ME, QE, YE")
     output_path: Optional[str] = Field(None, description="Путь для сохранения")
 
 
@@ -246,6 +259,23 @@ def tool_compute_dynamics(series_json: str) -> str:
     }, ensure_ascii=False)
 
 
+def tool_predict_series(series_json: str, steps: int = 6, resample_freq: str = "ME") -> str:
+    """Строит простой ML/MVP-прогноз ряда через линейный тренд и holdout-валидацию."""
+    df = _json_to_df(series_json)
+    result = predict_series(df, steps=steps, resample_freq=resample_freq)
+    return result.summary() + "\n" + json.dumps({
+        "series_name": result.series_name,
+        "steps": result.steps,
+        "frequency": result.frequency,
+        "slope_per_period": result.slope_per_period,
+        "last_actual_date": result.last_actual_date,
+        "last_actual_value": result.last_actual_value,
+        "holdout_mae": result.holdout_mae,
+        "holdout_mape": result.holdout_mape,
+        "forecast": result.forecast.to_dict(orient="records"),
+    }, ensure_ascii=False, default=str)
+
+
 def tool_plot_series(series_json_list: list[str], title: str = "Временной ряд",
                      output_path: str | None = None) -> str:
     """Строит график временных рядов. Возвращает путь к HTML-файлу."""
@@ -271,6 +301,19 @@ def tool_plot_lag_analysis(series1_json: str, series2_json: str,
     result = compute_lag_analysis(s1, s2, max_lag=max_lag)
     path = plot_lag_analysis(result, output_path=output_path)
     return f"График лагов сохранён: {path}\n{result.summary()}"
+
+
+def tool_plot_forecast(
+    series_json: str,
+    steps: int = 6,
+    resample_freq: str = "ME",
+    output_path: str | None = None,
+) -> str:
+    """Строит график факта, тренда и прогнозных точек. Возвращает путь к HTML."""
+    df = _json_to_df(series_json)
+    result = predict_series(df, steps=steps, resample_freq=resample_freq)
+    path = plot_forecast(df, result, output_path=output_path)
+    return f"График прогноза сохранён: {path}\n{result.summary()}"
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +384,11 @@ def get_all_tools() -> list:
         ("compute_dynamics", tool_compute_dynamics, DynamicsInput,
          "Анализирует динамику временного ряда: рост/падение, мин/макс, год-к-году."),
 
+        ("predict_series", tool_predict_series, ForecastInput,
+         "Строит MVP-прогноз временного ряда на N периодов через линейный тренд. "
+         "Используй, когда пользователь просит спрогнозировать, продлить график, "
+         "показать будущий тренд или оценить модельный риск прогноза."),
+
         ("plot_series", tool_plot_series, PlotSeriesInput,
          "Строит интерактивный график временных рядов (Plotly HTML). "
          "series_json_list — список JSON-строк рядов."),
@@ -350,6 +398,9 @@ def get_all_tools() -> list:
 
         ("plot_lag_analysis", tool_plot_lag_analysis, PlotLagInput,
          "Строит столбчатый график кросс-корреляции при разных лагах."),
+
+        ("plot_forecast", tool_plot_forecast, PlotForecastInput,
+         "Строит график факта, тренда и прогноза временного ряда."),
     ]
 
     tools = []

@@ -116,6 +116,37 @@ class DynamicsResult:
         )
 
 
+@dataclass
+class ForecastResult:
+    series_name: str
+    steps: int
+    frequency: str
+    slope_per_period: float
+    intercept: float
+    last_actual_date: pd.Timestamp
+    last_actual_value: float
+    forecast: pd.DataFrame
+    fitted: pd.DataFrame
+    holdout_mae: float | None = None
+    holdout_mape: float | None = None
+
+    def summary(self) -> str:
+        direction = "растет" if self.slope_per_period > 0 else "снижается"
+        validation = "валидация недоступна: слишком мало наблюдений"
+        if self.holdout_mae is not None:
+            validation = f"holdout MAE={self.holdout_mae:.3f}"
+            if self.holdout_mape is not None:
+                validation += f", MAPE={self.holdout_mape:.1f}%"
+
+        last_forecast = self.forecast["value"].iloc[-1]
+        return (
+            f"Прогноз '{self.series_name}' на {self.steps} пер.: тренд {direction} "
+            f"на {abs(self.slope_per_period):.3f} за период; "
+            f"последнее факт. значение={self.last_actual_value:.3f}, "
+            f"последний прогноз={last_forecast:.3f}. {validation}."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Core analytics functions
 # ---------------------------------------------------------------------------
@@ -298,6 +329,89 @@ def compute_dynamics(
     )
 
 
+def predict_series(
+    series: pd.DataFrame,
+    steps: int = 6,
+    date_col: str = "date",
+    value_col: str = "value",
+    resample_freq: str | None = "ME",
+) -> ForecastResult:
+    """
+    Строит MVP-прогноз временного ряда линейной экстраполяцией тренда.
+
+    Это не промышленная модель, а простой прогнозный модуль для демонстрации
+    ML-контура агента: обучение, holdout-валидация и будущие точки.
+
+    Returns:
+        ForecastResult с таблицей прогноза ['date', 'value', 'name', ...].
+    """
+    if steps < 1:
+        raise ValueError("steps должен быть >= 1")
+
+    df = series[[date_col, value_col]].dropna().sort_values(date_col).copy()
+    df.columns = ["date", "value"]
+    df["date"] = pd.to_datetime(df["date"])
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna()
+
+    if resample_freq:
+        df = (
+            df.set_index("date")["value"]
+            .resample(resample_freq)
+            .mean()
+            .dropna()
+            .reset_index()
+        )
+
+    if len(df) < 2:
+        raise ValueError("Для прогноза нужно минимум 2 наблюдения")
+
+    name = series["name"].iloc[0] if "name" in series.columns else "Series"
+    x = np.arange(len(df), dtype=float)
+    y = df["value"].astype(float).to_numpy()
+    slope, intercept = np.polyfit(x, y, 1)
+    fitted_values = slope * x + intercept
+
+    residual_std = float(np.std(y - fitted_values, ddof=1)) if len(df) > 2 else 0.0
+    forecast_x = np.arange(len(df), len(df) + steps, dtype=float)
+    forecast_values = slope * forecast_x + intercept
+    future_dates = _future_dates(df["date"].iloc[-1], steps, resample_freq)
+
+    forecast_df = pd.DataFrame(
+        {
+            "date": future_dates,
+            "value": forecast_values,
+            "lower": forecast_values - 1.96 * residual_std,
+            "upper": forecast_values + 1.96 * residual_std,
+            "name": f"{name} forecast",
+            "kind": "forecast",
+        }
+    )
+    fitted_df = pd.DataFrame(
+        {
+            "date": df["date"],
+            "value": fitted_values,
+            "name": f"{name} trend fit",
+            "kind": "fitted",
+        }
+    )
+    holdout_mae, holdout_mape = _linear_holdout_metrics(y)
+
+    return ForecastResult(
+        series_name=name,
+        steps=steps,
+        frequency=resample_freq or "native",
+        slope_per_period=round(float(slope), 6),
+        intercept=round(float(intercept), 6),
+        last_actual_date=df["date"].iloc[-1],
+        last_actual_value=round(float(y[-1]), 6),
+        forecast=forecast_df,
+        fitted=fitted_df,
+        holdout_mae=holdout_mae,
+        holdout_mape=holdout_mape,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Plotting (Plotly → HTML / PNG)
 # ---------------------------------------------------------------------------
@@ -421,6 +535,86 @@ def plot_regression(
     return _save_fig(fig, output_path or _auto_path("regression"), as_html)
 
 
+def plot_forecast(
+    series: pd.DataFrame,
+    result: ForecastResult,
+    title: str | None = None,
+    output_path: str | Path | None = None,
+    as_html: bool = True,
+) -> str:
+    """
+    Строит график фактического ряда, линейного тренда и прогноза с интервалом.
+    """
+    actual = series[["date", "value"]].dropna().sort_values("date").copy()
+    actual["date"] = pd.to_datetime(actual["date"])
+
+    if result.frequency != "native":
+        actual = (
+            actual.set_index("date")["value"]
+            .resample(result.frequency)
+            .mean()
+            .dropna()
+            .reset_index()
+        )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=actual["date"],
+            y=actual["value"],
+            mode="lines",
+            name=f"{result.series_name} fact",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=result.fitted["date"],
+            y=result.fitted["value"],
+            mode="lines",
+            name="trend fit",
+            line=dict(color="gray", dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=result.forecast["date"],
+            y=result.forecast["upper"],
+            mode="lines",
+            name="upper interval",
+            line=dict(width=0),
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=result.forecast["date"],
+            y=result.forecast["lower"],
+            mode="lines",
+            name="95% interval",
+            fill="tonexty",
+            fillcolor="rgba(31, 119, 180, 0.16)",
+            line=dict(width=0),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=result.forecast["date"],
+            y=result.forecast["value"],
+            mode="lines+markers",
+            name="forecast",
+            line=dict(color="crimson", dash="dash"),
+        )
+    )
+    fig.update_layout(
+        title=title or f"Прогноз: {result.series_name}",
+        yaxis_title="Значение",
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return _save_fig(fig, output_path or _auto_path("forecast"), as_html)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -459,3 +653,35 @@ def _save_fig(fig: go.Figure, path: str | Path, as_html: bool) -> str:
 def _auto_path(prefix: str) -> Path:
     DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     return DEFAULT_OUTPUT_DIR / prefix
+
+
+def _future_dates(last_date: pd.Timestamp, steps: int, freq: str | None) -> pd.DatetimeIndex:
+    if freq:
+        offset = pd.tseries.frequencies.to_offset(freq)
+        start = last_date + offset
+        return pd.date_range(start=start, periods=steps, freq=freq)
+
+    return pd.date_range(start=last_date + pd.Timedelta(days=1), periods=steps, freq="D")
+
+
+def _linear_holdout_metrics(y: np.ndarray) -> tuple[float | None, float | None]:
+    if len(y) < 8:
+        return None, None
+
+    holdout_size = max(2, min(len(y) // 5, 6))
+    train_y = y[:-holdout_size]
+    holdout_y = y[-holdout_size:]
+    train_x = np.arange(len(train_y), dtype=float)
+    holdout_x = np.arange(len(train_y), len(y), dtype=float)
+
+    slope, intercept = np.polyfit(train_x, train_y, 1)
+    predicted = slope * holdout_x + intercept
+    errors = np.abs(holdout_y - predicted)
+    mae = round(float(np.mean(errors)), 6)
+
+    non_zero = np.abs(holdout_y) > 1e-12
+    if not non_zero.any():
+        return mae, None
+
+    mape = round(float(np.mean(errors[non_zero] / np.abs(holdout_y[non_zero])) * 100), 6)
+    return mae, mape
